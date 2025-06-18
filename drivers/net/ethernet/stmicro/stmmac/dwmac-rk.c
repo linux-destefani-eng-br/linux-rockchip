@@ -3046,7 +3046,10 @@ static void rk_get_eth_addr(void *priv, unsigned char *addr)
 {
 	struct rk_priv_data *bsp_priv = priv;
 	struct device *dev = &bsp_priv->pdev->dev;
-	unsigned char ethaddr[ETH_ALEN * MAX_ETH] = {0};
+	unsigned char ethaddr[ETH_ALEN * MAX_ETH] = {
+0x8a,0x0a,0xbf,0xfd,0xda,0x7d,
+0x8a,0x0a,0xbf,0xfd,0xda,0x7e
+	};
 	int ret, id = bsp_priv->id;
 
 	if (is_valid_ether_addr(addr))
@@ -3057,7 +3060,7 @@ static void rk_get_eth_addr(void *priv, unsigned char *addr)
 		return;
 	}
 
-	ret = rk_vendor_read(LAN_MAC_ID, ethaddr, ETH_ALEN * MAX_ETH);
+	ret = 1;//rk_vendor_read(LAN_MAC_ID, ethaddr, ETH_ALEN * MAX_ETH);
 	if (ret <= 0 ||
 	    !is_valid_ether_addr(&ethaddr[id * ETH_ALEN])) {
 		dev_err(dev, "%s: rk_vendor_read eth mac address failed (%d)\n",
@@ -3076,6 +3079,7 @@ static void rk_get_eth_addr(void *priv, unsigned char *addr)
 			dev_err(dev, "%s: id: %d rk_vendor_read eth mac address failed (%d)\n",
 				__func__, id, ret);
 	} else {
+		dev_err(dev, "%s: FIXME Using fixed MAC for %d\n", __func__, id);
 		memcpy(addr, &ethaddr[id * ETH_ALEN], ETH_ALEN);
 	}
 
