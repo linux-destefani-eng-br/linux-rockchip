@@ -15,6 +15,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 #include <linux/videodev2.h>
+#include <linux/rk-camera-module.h>
 
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-fwnode.h>
@@ -172,6 +173,7 @@
 #define IMX296_CKREQSEL_HS				BIT(2)
 #define IMX296_GTTABLENUM				IMX296_REG_8BIT(0x4114)
 #define IMX296_CTRL418C					IMX296_REG_8BIT(0x418c)
+#define IMX296_NAME					"imx296"
 
 struct imx296_clk_params {
 	unsigned int freq;
@@ -207,6 +209,10 @@ struct imx296 {
 	struct v4l2_ctrl_handler ctrls;
 	struct v4l2_ctrl *hblank;
 	struct v4l2_ctrl *vblank;
+	u32 module_index;
+	const char *module_facing;
+	const char *module_name;
+	const char *len_name;
 };
 
 static inline struct imx296 *to_imx296(struct v4l2_subdev *sd)
@@ -294,6 +300,22 @@ static void imx296_power_off(struct imx296 *sensor)
 	regulator_bulk_disable(ARRAY_SIZE(sensor->supplies), sensor->supplies);
 }
 
+static int imx296_s_power(struct v4l2_subdev *sd, int on)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	struct imx296 *sensor = to_imx296(sd);
+
+	if (on)	{
+		dev_dbg(&client->dev, "imx296 power on\n");
+		imx296_power_on(sensor);
+	} else if (!on) {
+		dev_dbg(&client->dev, "imx296 power off\n");
+		imx296_power_off(sensor);
+	}
+
+	return 0;
+}
+
 /* -----------------------------------------------------------------------------
  * Controls
  */
@@ -309,6 +331,10 @@ static const char * const imx296_test_pattern_menu[] = {
 	"Cross",
 	"Stripe",
 	"Checks",
+};
+
+static const s64 imx296_link_freq_menu[] = {
+	594000000ULL,
 };
 
 static int imx296_s_ctrl(struct v4l2_ctrl *ctrl)
@@ -656,6 +682,109 @@ static int imx296_enum_mbus_code(struct v4l2_subdev *sd,
 	return 0;
 }
 
+static int imx296_g_frame_interval(struct v4l2_subdev *sd,
+				   struct v4l2_subdev_frame_interval *fi)
+{
+	fi->interval.numerator = 10000;
+	fi->interval.denominator = 600000;
+	return 0;
+}
+
+static int imx296_enum_frame_interval(struct v4l2_subdev *sd,
+				      struct v4l2_subdev_state *sd_state,
+				      struct v4l2_subdev_frame_interval_enum *fie)
+{
+	struct imx296 *sensor = to_imx296(sd);
+
+	if (fie->code != (sensor->mono ? MEDIA_BUS_FMT_Y10_1X10 : MEDIA_BUS_FMT_SBGGR10_1X10))
+		return -EINVAL;
+
+	fie->width = IMX296_PIXEL_ARRAY_WIDTH;
+	fie->height = IMX296_PIXEL_ARRAY_HEIGHT;
+	fie->interval.numerator = 10000;
+	fie->interval.denominator = 600000;
+	return 0;
+}
+
+static void imx296_get_module_inf(struct imx296 *imx296,
+				  struct rkmodule_inf *inf)
+{
+	memset(inf, 0, sizeof(*inf));
+	strlcpy(inf->base.sensor, IMX296_NAME, sizeof(inf->base.sensor));
+	strlcpy(inf->base.module, imx296->module_name,
+		sizeof(inf->base.module));
+	strlcpy(inf->base.lens, imx296->len_name, sizeof(inf->base.lens));
+}
+
+static long imx296_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
+{
+	struct imx296 *imx296 = to_imx296(sd);
+	long ret = 0;
+
+	switch (cmd) {
+	case RKMODULE_GET_MODULE_INFO:
+		imx296_get_module_inf(imx296, (struct rkmodule_inf *)arg);
+		break;
+	default:
+		ret = -ENOIOCTLCMD;
+		break;
+	}
+
+	return ret;
+}
+
+#ifdef CONFIG_COMPAT
+static long imx296_compat_ioctl32(struct v4l2_subdev *sd,
+				  unsigned int cmd, unsigned long arg)
+{
+	void __user *up = compat_ptr(arg);
+	struct rkmodule_inf *inf;
+	struct rkmodule_awb_cfg *cfg;
+	long ret;
+
+	switch (cmd) {
+	case RKMODULE_GET_MODULE_INFO:
+		inf = kzalloc(sizeof(*inf), GFP_KERNEL);
+		if (!inf) {
+			ret = -ENOMEM;
+			return ret;
+		}
+
+		ret = imx296_ioctl(sd, cmd, inf);
+		if (!ret)
+			ret = copy_to_user(up, inf, sizeof(*inf));
+		kfree(inf);
+		break;
+	case RKMODULE_AWB_CFG:
+		cfg = kzalloc(sizeof(*cfg), GFP_KERNEL);
+		if (!cfg) {
+			ret = -ENOMEM;
+			return ret;
+		}
+
+		ret = copy_from_user(cfg, up, sizeof(*cfg));
+		if (!ret)
+			ret = imx296_ioctl(sd, cmd, cfg);
+		kfree(cfg);
+		break;
+	default:
+		ret = -ENOIOCTLCMD;
+		break;
+	}
+
+	return ret;
+}
+#endif
+
+static int imx296_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad_id,
+				struct v4l2_mbus_config *config)
+{
+	config->type = V4L2_MBUS_CSI2_DPHY;
+	config->bus.mipi_csi2.num_data_lanes = 1;
+
+	return 0;
+}
+
 static int imx296_enum_frame_size(struct v4l2_subdev *sd,
 				  struct v4l2_subdev_state *state,
 				  struct v4l2_subdev_frame_size_enum *fse)
@@ -821,10 +950,21 @@ static int imx296_init_cfg(struct v4l2_subdev *sd,
 
 static const struct v4l2_subdev_video_ops imx296_subdev_video_ops = {
 	.s_stream = imx296_s_stream,
+	.g_frame_interval = imx296_g_frame_interval,
+};
+
+static struct v4l2_subdev_core_ops imx296_subdev_core_ops = {
+	.s_power = imx296_s_power,
+	.ioctl = imx296_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl32 = imx296_compat_ioctl32,
+#endif
 };
 
 static const struct v4l2_subdev_pad_ops imx296_subdev_pad_ops = {
 	.enum_mbus_code = imx296_enum_mbus_code,
+	.get_mbus_config = imx296_g_mbus_config,
+	.enum_frame_interval = imx296_enum_frame_interval,
 	.enum_frame_size = imx296_enum_frame_size,
 	.get_fmt = v4l2_subdev_get_fmt,
 	.set_fmt = imx296_set_format,
@@ -834,6 +974,7 @@ static const struct v4l2_subdev_pad_ops imx296_subdev_pad_ops = {
 };
 
 static const struct v4l2_subdev_ops imx296_subdev_ops = {
+	.core = &imx296_subdev_core_ops,
 	.video = &imx296_subdev_video_ops,
 	.pad = &imx296_subdev_pad_ops,
 };
@@ -1006,6 +1147,8 @@ static const struct regmap_config imx296_regmap_config = {
 static int imx296_probe(struct i2c_client *client)
 {
 	struct i2c_adapter *adapter = to_i2c_adapter(client->dev.parent);
+	struct device *dev = &client->dev;
+	struct device_node *node = dev->of_node;
 	unsigned long clk_rate;
 	struct imx296 *sensor;
 	unsigned int i;
@@ -1020,6 +1163,19 @@ static int imx296_probe(struct i2c_client *client)
 	sensor = devm_kzalloc(&client->dev, sizeof(*sensor), GFP_KERNEL);
 	if (!sensor)
 		return -ENOMEM;
+
+	ret = of_property_read_u32(node, RKMODULE_CAMERA_MODULE_INDEX,
+	                           &sensor->module_index);
+	ret |= of_property_read_string(node, RKMODULE_CAMERA_MODULE_FACING,
+	                               &sensor->module_facing);
+	ret |= of_property_read_string(node, RKMODULE_CAMERA_MODULE_NAME,
+	                               &sensor->module_name);
+	ret |= of_property_read_string(node, RKMODULE_CAMERA_LENS_NAME,
+	                               &sensor->len_name);
+	if (ret) {
+	        dev_err(dev, "could not get module information!\n");
+	        return -EINVAL;
+	}
 
 	sensor->dev = &client->dev;
 
@@ -1143,7 +1299,7 @@ MODULE_DEVICE_TABLE(of, imx296_of_match);
 static struct i2c_driver imx296_i2c_driver = {
 	.driver = {
 		.of_match_table = imx296_of_match,
-		.name = "imx296",
+		.name = IMX296_NAME,
 		.pm = &imx296_pm_ops
 	},
 	.probe_new = imx296_probe,
