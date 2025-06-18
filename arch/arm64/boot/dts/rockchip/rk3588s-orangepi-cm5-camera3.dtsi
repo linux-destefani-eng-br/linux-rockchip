@@ -27,6 +27,12 @@
 				remote-endpoint = <&imx219_3_out1>;
 				data-lanes = <1 2>;
 			};
+
+			mipidcphy1_in_ucam2: endpoint@2 {
+				reg = <2>;
+				remote-endpoint = <&imx296_3_out1>;
+				data-lanes = <1 2>;
+			};
 		};
 
 		port@1 {
@@ -80,6 +86,25 @@
 		port {
 			imx219_3_out1: endpoint {
 			        remote-endpoint = <&mipidcphy1_in_ucam1>;
+			        data-lanes = <1 2>;
+			};
+		};
+	};
+
+	imx296_3: imx296-3@1a {
+		status = "disabled";
+		compatible = "sony,imx296";
+		reg = <0x1a>;
+		clocks = <&ext_cam_imx296_clk>;
+		clock-names = "inck";
+		reset-gpios = <&gpio1 RK_PD2 GPIO_ACTIVE_LOW>;
+		rockchip,camera-module-index = <2>;
+		rockchip,camera-module-facing = "back";
+		rockchip,camera-module-name = "rpi-camera-gs";
+		rockchip,camera-module-lens-name = "default";
+		port {
+			imx296_3_out1: endpoint {
+			        remote-endpoint = <&mipidcphy1_in_ucam2>;
 			        data-lanes = <1 2>;
 			};
 		};

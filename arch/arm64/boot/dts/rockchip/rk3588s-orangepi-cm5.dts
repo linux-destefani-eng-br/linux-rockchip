@@ -184,6 +184,12 @@
 		clock-output-names = "ext_cam_ov5647_clk";
 		#clock-cells = <0>;
 	};
+	ext_cam_imx296_clk: external-camera-imx296-clock {
+		compatible = "fixed-clock";
+		clock-frequency = <54000000>;
+		clock-output-names = "ext_cam_imx296_clk";
+		#clock-cells = <0>;
+	};
 };
 
 &av1d_mmu {

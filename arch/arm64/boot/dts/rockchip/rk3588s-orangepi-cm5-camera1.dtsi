@@ -29,6 +29,12 @@
 				remote-endpoint = <&imx219_1_out1>;
 				data-lanes = <1 2>;
 			};
+
+			mipidphy1_in_ucam2: endpoint@2 {
+				reg = <2>;
+				remote-endpoint = <&imx296_1_out1>;
+				data-lanes = <1>;
+			};
 		};
 		port@1 {
 		        reg = <1>;
@@ -44,7 +50,7 @@
 
 &i2c4 {
 	status = "okay";
-	ddpinctrl-names = "default";
+	pinctrl-names = "default";
 	pinctrl-0 = <&i2c4m3_xfer>;
 
 	ov5647_1: ov5647-1@36 {
@@ -81,6 +87,35 @@
 			imx219_1_out1: endpoint {
 				remote-endpoint = <&mipidphy1_in_ucam1>;
 				data-lanes = <1 2>;
+			};
+		};
+	};
+
+	imx296_1: imx296-1@1a {
+		status = "disabled";
+		compatible = "sony,imx296";
+		reg = <0x1a>;
+		clocks = <&ext_cam_imx296_clk>;
+		clock-names = "inck";
+		reset-gpios = <&gpio1 RK_PD0 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 =<&camera1_power_enable>;
+
+		avdd-supply = <&cam_dummy_reg>;
+		dvdd-supply = <&cam_dummy_reg>; /* 1.8v */
+		ovdd-supply = <&cam_dummy_reg>; /* 1.2v */
+		rockchip,camera-module-index = <0>;
+		rockchip,camera-module-facing = "back";
+		rockchip,camera-module-name = "rpi-camera-gs";
+		rockchip,camera-module-lens-name = "default";
+		port {
+			imx296_1_out1: endpoint {
+				remote-endpoint = <&mipidphy1_in_ucam2>;
+				clock-lanes = <0>;
+				data-lanes = <1>;
+				clock-noncontinuous;
+				link-frequencies =
+					/bits/ 64 <594000000>;
 			};
 		};
 	};

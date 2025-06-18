@@ -63,6 +63,10 @@
 			imx219-4@10 {
 				status = "okay";
 			};
+
+			imx296-4@1a {
+				status = "okay";
+			};
 		};
 	};
 };
