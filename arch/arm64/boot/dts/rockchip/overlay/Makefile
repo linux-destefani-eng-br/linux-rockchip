@@ -35,6 +35,10 @@ dtbo-$(CONFIG_ARCH_ROCKCHIP) += \
 	orangepi-5-pro-cam1.dtbo \
 	orangepi-5-pro-cam2.dtbo \
 	orangepi-5-pro-disable-leds.dtbo \
+	rk3588-opicm5-cam1.dtbo \
+	rk3588-opicm5-cam2.dtbo \
+	rk3588-opicm5-cam3.dtbo \
+	rk3588-opicm5-cam4.dtbo \
 	rock-3a-sata.dtbo \
 	rock-5a-hdmi-8k.dtbo \
 	rock-5a-i2c5-rtc-hym8563.dtbo \
