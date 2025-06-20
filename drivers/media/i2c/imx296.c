@@ -173,7 +173,23 @@
 #define IMX296_CKREQSEL_HS				BIT(2)
 #define IMX296_GTTABLENUM				IMX296_REG_8BIT(0x4114)
 #define IMX296_CTRL418C					IMX296_REG_8BIT(0x418c)
+#define MAX_20BITS					BIT(21)-1
 #define IMX296_NAME					"imx296"
+
+enum custom_ctrls_t {
+	TRIG_EXTERNAL,
+	TRIG_MODE,
+	TRIG_SHUTTER,
+	TRIG_START,
+	TRIG_END,
+	CUSTOM_CONTROLS,
+};
+
+#define V4L2_CID_TRIG_EXTERNAL	(V4L2_CID_USER_IMX296_BASE + TRIG_EXTERNAL)
+#define V4L2_CID_TRIG_MODE	(V4L2_CID_USER_IMX296_BASE + TRIG_MODE)
+#define V4L2_CID_TRIG_SHUTTER	(V4L2_CID_USER_IMX296_BASE + TRIG_SHUTTER)
+#define V4L2_CID_TRIG_START	(V4L2_CID_USER_IMX296_BASE + TRIG_START)
+#define V4L2_CID_TRIG_END	(V4L2_CID_USER_IMX296_BASE + TRIG_END)
 
 struct imx296_clk_params {
 	unsigned int freq;
@@ -207,8 +223,15 @@ struct imx296 {
 	struct media_pad pad;
 
 	struct v4l2_ctrl_handler ctrls;
+	struct v4l2_ctrl *exposure;
+	struct v4l2_ctrl *gain;
 	struct v4l2_ctrl *hblank;
 	struct v4l2_ctrl *vblank;
+	struct v4l2_ctrl *test_pattern;
+	struct v4l2_ctrl *vflip;
+	struct v4l2_ctrl *hflip;
+	struct v4l2_ctrl *custom_ctrls[CUSTOM_CONTROLS];
+
 	u32 module_index;
 	const char *module_facing;
 	const char *module_name;
@@ -333,16 +356,155 @@ static const char * const imx296_test_pattern_menu[] = {
 	"Checks",
 };
 
+static const char * const imx296_trigger_mode_menu[] = {
+	"Disabled (always low)",
+	"High level when shutter is active",
+	"Low level when shutter is active",
+};
+
 static const s64 imx296_link_freq_menu[] = {
 	594000000ULL,
 };
+
+static void imx296_grab_ctrls(struct imx296 *sensor, bool grabbed)
+{
+	if (grabbed) {
+		__v4l2_ctrl_grab(sensor->vflip, 1);
+		__v4l2_ctrl_grab(sensor->hflip, 1);
+		__v4l2_ctrl_grab(sensor->custom_ctrls[TRIG_EXTERNAL], 1);
+		__v4l2_ctrl_grab(sensor->custom_ctrls[TRIG_MODE], 1);
+		__v4l2_ctrl_grab(sensor->custom_ctrls[TRIG_SHUTTER], 1);
+		__v4l2_ctrl_grab(sensor->custom_ctrls[TRIG_START], 1);
+		__v4l2_ctrl_grab(sensor->custom_ctrls[TRIG_END], 1);
+	} else {
+		__v4l2_ctrl_grab(sensor->vflip, 0);
+		__v4l2_ctrl_grab(sensor->hflip, 0);
+		__v4l2_ctrl_grab(sensor->custom_ctrls[TRIG_EXTERNAL], 0);
+		__v4l2_ctrl_grab(sensor->custom_ctrls[TRIG_MODE], 0);
+		__v4l2_ctrl_grab(sensor->custom_ctrls[TRIG_SHUTTER], 0);
+		if (!sensor->custom_ctrls[TRIG_SHUTTER]->val
+		     || !sensor->custom_ctrls[TRIG_EXTERNAL]->val) {
+			/* If start and stop is automatic or external trigger
+			 * is enabled (the chip do not support pulse output
+			 * with fast trigger mode), so block changes */
+			__v4l2_ctrl_grab(sensor->custom_ctrls[TRIG_START], 1);
+			__v4l2_ctrl_grab(sensor->custom_ctrls[TRIG_END], 1);
+		} else {
+			__v4l2_ctrl_grab(sensor->custom_ctrls[TRIG_START], 0);
+			__v4l2_ctrl_grab(sensor->custom_ctrls[TRIG_END], 0);
+		}
+	}
+}
+
+static void set_shutter_mode(struct imx296 *sensor, u32 vmax)
+{
+	imx296_grab_ctrls(sensor, false);
+	if (!sensor->custom_ctrls[TRIG_SHUTTER]->val)
+		return;
+	if (sensor->custom_ctrls[TRIG_EXTERNAL]->val) {
+		/* Sensor don't support external pulse in fast trigger mode */
+		__v4l2_ctrl_s_ctrl(sensor->custom_ctrls[TRIG_START], 0);
+		__v4l2_ctrl_s_ctrl(sensor->custom_ctrls[TRIG_END], 0);
+	} else {
+		__v4l2_ctrl_s_ctrl(sensor->custom_ctrls[TRIG_START],
+				   sensor->exposure->cur.val + 4);
+		__v4l2_ctrl_s_ctrl(sensor->custom_ctrls[TRIG_END], vmax + 4);
+	}
+}
+
+static void set_exposure(struct imx296 *sensor, u32 val, s32 vmax, int *ret)
+{
+	imx296_write(sensor, IMX296_SHS1, vmax - val, ret);
+}
+
+static void set_gain(struct imx296 *sensor, u32 val, int *ret)
+{
+	imx296_write(sensor, IMX296_GAIN, val, ret);
+}
+
+static void set_vblank(struct imx296 *sensor, u32 val, int *ret)
+{
+	imx296_write(sensor, IMX296_VMAX, val, ret);
+}
+
+static void set_test_pattern(struct imx296 *sensor, int *ret)
+{
+	if (sensor->test_pattern->val) {
+		imx296_write(sensor, IMX296_PGHPOS, 8, ret);
+		imx296_write(sensor, IMX296_PGVPOS, 8, ret);
+		imx296_write(sensor, IMX296_PGHPSTEP, 8, ret);
+		imx296_write(sensor, IMX296_PGVPSTEP, 8, ret);
+		imx296_write(sensor, IMX296_PGHPNUM, 100, ret);
+		imx296_write(sensor, IMX296_PGVPNUM, 100, ret);
+		imx296_write(sensor, IMX296_PGDATA1, 0x300, ret);
+		imx296_write(sensor, IMX296_PGDATA2, 0x100, ret);
+		imx296_write(sensor, IMX296_PGHGSTEP, 0, ret);
+		imx296_write(sensor, IMX296_BLKLEVEL, 0, ret);
+		imx296_write(sensor, IMX296_BLKLEVELAUTO,
+			     IMX296_BLKLEVELAUTO_OFF, ret);
+		imx296_write(sensor, IMX296_PGCTRL,
+			     IMX296_PGCTRL_REGEN |
+			     IMX296_PGCTRL_CLKEN |
+			     IMX296_PGCTRL_MODE(sensor->test_pattern->val - 1),
+			     ret);
+	} else {
+		imx296_write(sensor, IMX296_PGCTRL,
+			     IMX296_PGCTRL_CLKEN, ret);
+		imx296_write(sensor, IMX296_BLKLEVEL, 0x3c, ret);
+		imx296_write(sensor, IMX296_BLKLEVELAUTO,
+			     IMX296_BLKLEVELAUTO_ON, ret);
+	}
+}
+
+static int imx296_t_ctrl(struct v4l2_ctrl *ctrl)
+{
+	struct imx296 *sensor = container_of(ctrl->handler, struct imx296, ctrls);
+	const struct v4l2_mbus_framefmt *format;
+	struct v4l2_subdev_state *state;
+	u32 vmax;
+
+	if (!pm_runtime_get_if_in_use(sensor->dev))
+		return 0;
+
+	state = v4l2_subdev_get_locked_active_state(&sensor->subdev);
+	format = v4l2_subdev_get_pad_format(&sensor->subdev, state, 0);
+	vmax = format->height + sensor->vblank->cur.val;
+	switch (ctrl->id) {
+	case V4L2_CID_EXPOSURE:
+		/* Clamp the exposure value to VMAX - 4 (memory wait time). */
+		if (ctrl->val < 1)
+			ctrl->val = 1;
+		else if (ctrl->val > vmax - 4)
+			ctrl->val = vmax - 4;
+		break;
+
+	case V4L2_CID_TRIG_START:
+		if (ctrl->val >= sensor->custom_ctrls[TRIG_END]->val) {
+			ctrl->val = sensor->custom_ctrls[TRIG_END]->val;
+			break;
+		}
+		break;
+
+	case V4L2_CID_TRIG_END:
+		if (ctrl->val <= sensor->custom_ctrls[TRIG_START]->val) {
+			ctrl->val = sensor->custom_ctrls[TRIG_START]->val;
+			break;
+		}
+		break;
+
+	}
+
+	pm_runtime_put(sensor->dev);
+
+	return 0;
+}
 
 static int imx296_s_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct imx296 *sensor = container_of(ctrl->handler, struct imx296, ctrls);
 	const struct v4l2_mbus_framefmt *format;
 	struct v4l2_subdev_state *state;
-	unsigned int vmax;
+	u32 vmax;
 	int ret = 0;
 
 	if (!pm_runtime_get_if_in_use(sensor->dev))
@@ -350,49 +512,42 @@ static int imx296_s_ctrl(struct v4l2_ctrl *ctrl)
 
 	state = v4l2_subdev_get_locked_active_state(&sensor->subdev);
 	format = v4l2_subdev_get_pad_format(&sensor->subdev, state, 0);
+	vmax = format->height + sensor->vblank->cur.val;
 
 	switch (ctrl->id) {
 	case V4L2_CID_EXPOSURE:
-		/* Clamp the exposure value to VMAX. */
-		vmax = format->height + sensor->vblank->cur.val;
-		ctrl->val = min_t(int, ctrl->val, vmax);
-		imx296_write(sensor, IMX296_SHS1, vmax - ctrl->val, &ret);
+		set_exposure(sensor, ctrl->val, vmax, &ret);
 		break;
 
 	case V4L2_CID_ANALOGUE_GAIN:
-		imx296_write(sensor, IMX296_GAIN, ctrl->val, &ret);
+		set_gain(sensor, ctrl->val, &ret);
 		break;
 
 	case V4L2_CID_VBLANK:
-		imx296_write(sensor, IMX296_VMAX, format->height + ctrl->val,
-			     &ret);
+		set_vblank(sensor, format->height + ctrl->val, &ret);
 		break;
 
 	case V4L2_CID_TEST_PATTERN:
-		if (ctrl->val) {
-			imx296_write(sensor, IMX296_PGHPOS, 8, &ret);
-			imx296_write(sensor, IMX296_PGVPOS, 8, &ret);
-			imx296_write(sensor, IMX296_PGHPSTEP, 8, &ret);
-			imx296_write(sensor, IMX296_PGVPSTEP, 8, &ret);
-			imx296_write(sensor, IMX296_PGHPNUM, 100, &ret);
-			imx296_write(sensor, IMX296_PGVPNUM, 100, &ret);
-			imx296_write(sensor, IMX296_PGDATA1, 0x300, &ret);
-			imx296_write(sensor, IMX296_PGDATA2, 0x100, &ret);
-			imx296_write(sensor, IMX296_PGHGSTEP, 0, &ret);
-			imx296_write(sensor, IMX296_BLKLEVEL, 0, &ret);
-			imx296_write(sensor, IMX296_BLKLEVELAUTO,
-				     IMX296_BLKLEVELAUTO_OFF, &ret);
-			imx296_write(sensor, IMX296_PGCTRL,
-				     IMX296_PGCTRL_REGEN |
-				     IMX296_PGCTRL_CLKEN |
-				     IMX296_PGCTRL_MODE(ctrl->val - 1), &ret);
-		} else {
-			imx296_write(sensor, IMX296_PGCTRL,
-				     IMX296_PGCTRL_CLKEN, &ret);
-			imx296_write(sensor, IMX296_BLKLEVEL, 0x3c, &ret);
-			imx296_write(sensor, IMX296_BLKLEVELAUTO,
-				     IMX296_BLKLEVELAUTO_ON, &ret);
-		}
+		set_test_pattern(sensor, &ret);
+		break;
+
+		/* Some registers must change during standby, this is done
+		 * inside imx296_setup. This handler only validate the values
+		 * in the handler */
+	case V4L2_CID_HFLIP:
+	case V4L2_CID_VFLIP:
+	case V4L2_CID_TRIG_MODE:
+		break;
+	case V4L2_CID_TRIG_EXTERNAL:
+	case V4L2_CID_TRIG_SHUTTER:
+		/* Both controls can grab/ungrab start/stop time */
+		set_shutter_mode(sensor, vmax);
+		break;
+
+	case V4L2_CID_TRIG_START:
+		break;
+
+	case V4L2_CID_TRIG_END:
 		break;
 
 	default:
@@ -406,26 +561,86 @@ static int imx296_s_ctrl(struct v4l2_ctrl *ctrl)
 }
 
 static const struct v4l2_ctrl_ops imx296_ctrl_ops = {
+	.try_ctrl = imx296_t_ctrl,
 	.s_ctrl = imx296_s_ctrl,
+};
+
+static const struct v4l2_ctrl_config imx296_ctrls[CUSTOM_CONTROLS] = {
+	{
+		.ops = &imx296_ctrl_ops,
+		.id = V4L2_CID_TRIG_EXTERNAL,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.name = "External trigger",
+		.min = false,
+		.max = true,
+		.step = 1,
+		.def = false,
+	}, {
+		.ops = &imx296_ctrl_ops,
+		.id = V4L2_CID_TRIG_MODE,
+		.type = V4L2_CTRL_TYPE_MENU,
+		.name = "Trigger mode",
+		.max = ARRAY_SIZE(imx296_trigger_mode_menu) -1,
+		.def = 0,
+		.qmenu = imx296_trigger_mode_menu,
+	}, {
+		.ops = &imx296_ctrl_ops,
+		.id = V4L2_CID_TRIG_SHUTTER,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.name = "Pulse follow exposure",
+		.min = false,
+		.max = true,
+		.step = 1,
+		.def = true,
+	}, {
+		.ops = &imx296_ctrl_ops,
+		.id = V4L2_CID_TRIG_START,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.name = "Pulse start delay",
+		.min = 0,
+		.max = 0x46A,
+		.step = 1,
+		.def = 0,
+	}, {
+		.ops = &imx296_ctrl_ops,
+		.id = V4L2_CID_TRIG_END,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.name = "Pulse end delay",
+		.min = 0,
+		.max = 0x46A,
+		.step = 1,
+		.def = 0,
+	},
 };
 
 static int imx296_ctrls_init(struct imx296 *sensor)
 {
 	struct v4l2_fwnode_device_properties props;
 	unsigned int hblank;
+	int i;
 	int ret;
 
 	ret = v4l2_fwnode_device_parse(sensor->dev, &props);
 	if (ret < 0)
 		return ret;
 
-	v4l2_ctrl_handler_init(&sensor->ctrls, 9);
+	v4l2_ctrl_handler_init(&sensor->ctrls, 12 + ARRAY_SIZE(imx296_ctrls));
 
-	v4l2_ctrl_new_std(&sensor->ctrls, &imx296_ctrl_ops,
-			  V4L2_CID_EXPOSURE, 1, 1048575, 1, 1104);
-	v4l2_ctrl_new_std(&sensor->ctrls, &imx296_ctrl_ops,
+	sensor->exposure = v4l2_ctrl_new_std(&sensor->ctrls, &imx296_ctrl_ops,
+			  V4L2_CID_EXPOSURE, 1, MAX_20BITS, 1, 1104);
+	sensor->gain = v4l2_ctrl_new_std(&sensor->ctrls, &imx296_ctrl_ops,
 			  V4L2_CID_ANALOGUE_GAIN, IMX296_GAIN_MIN,
 			  IMX296_GAIN_MAX, 1, IMX296_GAIN_MIN);
+
+	sensor->hflip = v4l2_ctrl_new_std(&sensor->ctrls, &imx296_ctrl_ops,
+					  V4L2_CID_HFLIP, 0, 1, 1, 0);
+	if (sensor->hflip && !sensor->mono)
+		sensor->hflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
+
+	sensor->vflip = v4l2_ctrl_new_std(&sensor->ctrls, &imx296_ctrl_ops,
+					  V4L2_CID_VFLIP, 0, 1, 1, 0);
+	if (sensor->vflip && !sensor->mono)
+		sensor->vflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
 
 	/*
 	 * Horizontal blanking is controlled through the HMAX register, which
@@ -442,8 +657,8 @@ static int imx296_ctrls_init(struct imx296 *sensor)
 		sensor->hblank->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
 	sensor->vblank = v4l2_ctrl_new_std(&sensor->ctrls, &imx296_ctrl_ops,
-					   V4L2_CID_VBLANK, 30,
-					   1048575 - IMX296_PIXEL_ARRAY_HEIGHT,
+					   V4L2_CID_VBLANK, 30, MAX_20BITS -
+					   IMX296_PIXEL_ARRAY_HEIGHT,
 					   1, 30);
 	/*
 	 * The sensor calculates the MIPI timings internally to achieve a bit
@@ -454,10 +669,20 @@ static int imx296_ctrls_init(struct imx296 *sensor)
 	 */
 	v4l2_ctrl_new_std(&sensor->ctrls, NULL, V4L2_CID_PIXEL_RATE,
 			  1122000000 / 10, 1198000000 / 10, 1, 1188000000 / 10);
-	v4l2_ctrl_new_std_menu_items(&sensor->ctrls, &imx296_ctrl_ops,
+
+	sensor->test_pattern = v4l2_ctrl_new_std_menu_items(&sensor->ctrls,
+				     &imx296_ctrl_ops,
 				     V4L2_CID_TEST_PATTERN,
 				     ARRAY_SIZE(imx296_test_pattern_menu) - 1,
 				     0, 0, imx296_test_pattern_menu);
+
+	v4l2_ctrl_new_int_menu(&sensor->ctrls, NULL, V4L2_CID_LINK_FREQ,
+			       ARRAY_SIZE(imx296_link_freq_menu) - 1, 0,
+			       imx296_link_freq_menu);
+
+	for (i = 0; i < ARRAY_SIZE(imx296_ctrls); i++)
+		sensor->custom_ctrls[i] = v4l2_ctrl_new_custom(&sensor->ctrls,
+				     &imx296_ctrls[i], NULL);
 
 	v4l2_ctrl_new_fwnode_properties(&sensor->ctrls, &imx296_ctrl_ops,
 					&props);
@@ -530,11 +755,50 @@ static const struct {
 	{ IMX296_REG_8BIT(0x4174), 0x00 },
 };
 
+static void set_trigger_mode(struct imx296 *sensor, int *err)
+{
+	/* Pulse1 and Pulse2 have different functions for each mode:
+	 *                    | Pulse 1     | Pulse 2     | Reference       |
+	 * Normal mode        | Even field  | Odd field   | XVS edge down   |
+	 * Sequential trigger | Both fields | Both fields | XTRIG edge down |
+	 * Fast trigger       | unsupported | unsupported | unavailable     |
+	 * In normal mode, PULSE{1,2}_{UP,DOWN} set the timing.
+	 * In trigger mode, PULSE1_{UP,DOWN} set the timing, but PULSE2_DOWN
+	 * marks the period where trigger rise is prohibit + 2 XHS
+	 * Thats why we enable both in normal mode and only the first in
+	 * trigger mode */
+	u32 ctrl_tout = IMX296_CTRLTOUT_TOUT1SEL_LOW |
+			IMX296_CTRLTOUT_TOUT2SEL_LOW;
+	u32 pulse1 = 0;
+	// This byte should have the third bit be always written 1:
+	u32 pulse2 = BIT(3);
+	s32 value = sensor->custom_ctrls[TRIG_MODE]->cur.val;
+	if (0==value) {
+		ctrl_tout = IMX296_CTRLTOUT_TOUT1SEL_LOW |
+			    IMX296_CTRLTOUT_TOUT2SEL_LOW;
+	} else {
+		ctrl_tout = IMX296_CTRLTOUT_TOUT1SEL_PULSE |
+			    IMX296_CTRLTOUT_TOUT2SEL_PULSE;
+		pulse1 |= IMX296_PULSE1_EN_NOR;
+		pulse2 |= IMX296_PULSE2_EN_NOR;
+		if (2==value) {
+			dev_err(sensor->dev, "YES PULSE INVERTED\n");
+			pulse1 |= IMX296_PULSE1_POL_LOW;
+			pulse2 |= IMX296_PULSE2_POL_LOW;
+		}
+	}
+	imx296_write(sensor, IMX296_CTRLTOUT, ctrl_tout, err);
+	imx296_write(sensor, IMX296_CTRLTRIG, 0x21, err);
+	imx296_write(sensor, IMX296_PULSE1, pulse1, err);
+	imx296_write(sensor, IMX296_PULSE2, pulse2, err);
+}
+
 static int imx296_setup(struct imx296 *sensor, struct v4l2_subdev_state *state)
 {
 	const struct v4l2_mbus_framefmt *format;
 	const struct v4l2_rect *crop;
 	unsigned int i;
+	unsigned int vmax;
 	int ret = 0;
 
 	format = v4l2_subdev_get_pad_format(&sensor->subdev, state, 0);
@@ -556,6 +820,13 @@ static int imx296_setup(struct imx296 *sensor, struct v4l2_subdev_state *state)
 		imx296_write(sensor, IMX296_FID0_ROI, 0, &ret);
 	}
 
+	imx296_write(sensor, IMX296_CTRL0B,
+		     (sensor->custom_ctrls[TRIG_EXTERNAL]->cur.val == 1) ?
+		     IMX296_CTRL0B_TRIGEN : 0, &ret);
+	imx296_write(sensor, IMX296_LOWLAGTRG,
+		     (sensor->custom_ctrls[TRIG_EXTERNAL]->cur.val == 1) ?
+		     IMX296_LOWLAGTRG_FAST : 0, &ret);
+
 	imx296_write(sensor, IMX296_CTRL0D,
 		     (crop->width != format->width ?
 		      IMX296_CTRL0D_HADD_ON_BINNING : 0) |
@@ -563,6 +834,9 @@ static int imx296_setup(struct imx296 *sensor, struct v4l2_subdev_state *state)
 		      IMX296_CTRL0D_WINMODE_FD_BINNING : 0),
 		     &ret);
 
+	imx296_write(sensor, IMX296_CTRL0E,
+		     sensor->vflip->cur.val | (sensor->hflip->cur.val << 1),
+		     &ret);
 	/*
 	 * HMAX and VMAX configure horizontal and vertical blanking by
 	 * specifying the total line time and frame time respectively. The line
@@ -581,9 +855,11 @@ static int imx296_setup(struct imx296 *sensor, struct v4l2_subdev_state *state)
 	 * - one line for the FE packet
 	 * - 16 or more lines of vertical blanking
 	 */
+	vmax = format->height + sensor->vblank->cur.val;
 	imx296_write(sensor, IMX296_HMAX, 1100, &ret);
-	imx296_write(sensor, IMX296_VMAX,
-		     format->height + sensor->vblank->cur.val, &ret);
+	set_vblank(sensor, vmax, &ret);
+	set_exposure(sensor, sensor->exposure->cur.val, vmax, &ret);
+	set_gain(sensor, sensor->gain->cur.val, &ret);
 
 	for (i = 0; i < ARRAY_SIZE(sensor->clk_params->incksel); ++i)
 		imx296_write(sensor, IMX296_INCKSEL(i),
@@ -593,6 +869,19 @@ static int imx296_setup(struct imx296 *sensor, struct v4l2_subdev_state *state)
 		     &ret);
 
 	imx296_write(sensor, IMX296_GAINDLY, IMX296_GAINDLY_NONE, &ret);
+
+	set_trigger_mode(sensor, &ret);
+	set_shutter_mode(sensor, vmax);
+
+	imx296_write(sensor, IMX296_PULSE1_UP,
+		     sensor->custom_ctrls[TRIG_START]->cur.val, &ret);
+	imx296_write(sensor, IMX296_PULSE2_UP,
+		     sensor->custom_ctrls[TRIG_START]->cur.val, &ret);
+	imx296_write(sensor, IMX296_PULSE1_DN,
+		     sensor->custom_ctrls[TRIG_END]->cur.val, &ret);
+	imx296_write(sensor, IMX296_PULSE2_DN,
+		     sensor->custom_ctrls[TRIG_END]->cur.val, &ret);
+
 	imx296_write(sensor, IMX296_BLKLEVEL, 0x03c, &ret);
 
 	return ret;
@@ -602,10 +891,18 @@ static int imx296_stream_on(struct imx296 *sensor)
 {
 	int ret = 0;
 
+	imx296_grab_ctrls(sensor, true);
 	imx296_write(sensor, IMX296_CTRL00, 0, &ret);
 	usleep_range(2000, 5000);
+
 	imx296_write(sensor, IMX296_CTRL0A, 0, &ret);
 
+	/* Despite the hardware be able to change some parameters while
+	 * streaming, it must be made in a small time window during the
+	 * capture cycle. This driver is working in the most safe way and
+	 * simple way, everything is configured while the sensor is in standby.
+	 * The controls are grabbed while streaming, or while another control
+	 * is making the driver apply some value. */
 	return ret;
 }
 
@@ -615,6 +912,8 @@ static int imx296_stream_off(struct imx296 *sensor)
 
 	imx296_write(sensor, IMX296_CTRL0A, IMX296_CTRL0A_XMSTA, &ret);
 	imx296_write(sensor, IMX296_CTRL00, IMX296_CTRL00_STANDBY, &ret);
+
+	imx296_grab_ctrls(sensor, false);
 
 	return ret;
 }
@@ -640,11 +939,8 @@ static int imx296_s_stream(struct v4l2_subdev *sd, int enable)
 	if (ret < 0)
 		goto unlock;
 
-	ret = imx296_setup(sensor, state);
-	if (ret < 0)
-		goto err_pm;
 
-	ret = __v4l2_ctrl_handler_setup(&sensor->ctrls);
+	ret = imx296_setup(sensor, state);
 	if (ret < 0)
 		goto err_pm;
 
