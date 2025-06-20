@@ -939,6 +939,7 @@ static int imx296_s_stream(struct v4l2_subdev *sd, int enable)
 	if (ret < 0)
 		goto unlock;
 
+	msleep(200);
 
 	ret = imx296_setup(sensor, state);
 	if (ret < 0)
@@ -1523,6 +1524,7 @@ static int imx296_probe(struct i2c_client *client)
 	if (ret < 0)
 		return ret;
 
+	msleep(200);
 	ret = imx296_identify_model(sensor);
 	if (ret < 0)
 		goto err_power;
