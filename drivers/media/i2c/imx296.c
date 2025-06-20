@@ -238,6 +238,25 @@ struct imx296 {
 	const char *len_name;
 };
 
+void debug_ctrls(struct imx296 *sensor, const char *msg)
+{
+	pr_err("debug_ctrls %s", msg);
+	pr_cont(" vflip:");
+	v4l2_ctrl_type_op_log(sensor->vflip);
+	pr_cont(" hflip:");
+	v4l2_ctrl_type_op_log(sensor->hflip);
+	pr_cont(" TRIG_EXTERNAL:");
+	v4l2_ctrl_type_op_log(sensor->custom_ctrls[TRIG_EXTERNAL]);
+	pr_cont(" TRIG_MODE:");
+	v4l2_ctrl_type_op_log(sensor->custom_ctrls[TRIG_MODE]);
+	pr_cont(" TRIG_SHUTTER:");
+	v4l2_ctrl_type_op_log(sensor->custom_ctrls[TRIG_SHUTTER]);
+	pr_cont(" TRIG_START:");
+	v4l2_ctrl_type_op_log(sensor->custom_ctrls[TRIG_START]);
+	pr_cont(" TRIG_END:");
+	v4l2_ctrl_type_op_log(sensor->custom_ctrls[TRIG_END]);
+}
+
 static inline struct imx296 *to_imx296(struct v4l2_subdev *sd)
 {
 	return container_of(sd, struct imx296, subdev);
@@ -368,6 +387,9 @@ static const s64 imx296_link_freq_menu[] = {
 
 static void imx296_grab_ctrls(struct imx296 *sensor, bool grabbed)
 {
+	pr_err("imx296_grab_ctrls grabbed=%d", grabbed);
+	dump_stack();
+	debug_ctrls(sensor, "imx296_grab_ctrls");
 	if (grabbed) {
 		__v4l2_ctrl_grab(sensor->vflip, 1);
 		__v4l2_ctrl_grab(sensor->hflip, 1);
@@ -402,10 +424,12 @@ static void set_shutter_mode(struct imx296 *sensor, u32 vmax)
 	if (!sensor->custom_ctrls[TRIG_SHUTTER]->val)
 		return;
 	if (sensor->custom_ctrls[TRIG_EXTERNAL]->val) {
+		dev_err(sensor->dev, "FIXING SHUTTER Sensor don't support external pulse in fast trigger mode \n");
 		/* Sensor don't support external pulse in fast trigger mode */
 		__v4l2_ctrl_s_ctrl(sensor->custom_ctrls[TRIG_START], 0);
 		__v4l2_ctrl_s_ctrl(sensor->custom_ctrls[TRIG_END], 0);
 	} else {
+		dev_err(sensor->dev, "AUTO SHUTTER\n");
 		__v4l2_ctrl_s_ctrl(sensor->custom_ctrls[TRIG_START],
 				   sensor->exposure->cur.val + 4);
 		__v4l2_ctrl_s_ctrl(sensor->custom_ctrls[TRIG_END], vmax + 4);
@@ -414,6 +438,7 @@ static void set_shutter_mode(struct imx296 *sensor, u32 vmax)
 
 static void set_exposure(struct imx296 *sensor, u32 val, s32 vmax, int *ret)
 {
+	dev_err(sensor->dev, "Setting SHS1=%d\n", vmax-val);
 	imx296_write(sensor, IMX296_SHS1, vmax - val, ret);
 }
 
@@ -424,6 +449,7 @@ static void set_gain(struct imx296 *sensor, u32 val, int *ret)
 
 static void set_vblank(struct imx296 *sensor, u32 val, int *ret)
 {
+	dev_err(sensor->dev, "Setting VMAX=%d\n", val);
 	imx296_write(sensor, IMX296_VMAX, val, ret);
 }
 
@@ -541,13 +567,16 @@ static int imx296_s_ctrl(struct v4l2_ctrl *ctrl)
 	case V4L2_CID_TRIG_EXTERNAL:
 	case V4L2_CID_TRIG_SHUTTER:
 		/* Both controls can grab/ungrab start/stop time */
+		debug_ctrls(sensor, "case V4L2_CID_TRIG_SHUTTER");
 		set_shutter_mode(sensor, vmax);
 		break;
 
 	case V4L2_CID_TRIG_START:
+		debug_ctrls(sensor, "case V4L2_CID_TRIG_START");
 		break;
 
 	case V4L2_CID_TRIG_END:
+		debug_ctrls(sensor, "case V4L2_CID_TRIG_END");
 		break;
 
 	default:
@@ -774,9 +803,11 @@ static void set_trigger_mode(struct imx296 *sensor, int *err)
 	u32 pulse2 = BIT(3);
 	s32 value = sensor->custom_ctrls[TRIG_MODE]->cur.val;
 	if (0==value) {
+		dev_err(sensor->dev, "NO PULSE\n");
 		ctrl_tout = IMX296_CTRLTOUT_TOUT1SEL_LOW |
 			    IMX296_CTRLTOUT_TOUT2SEL_LOW;
 	} else {
+		dev_err(sensor->dev, "YES PULSE\n");
 		ctrl_tout = IMX296_CTRLTOUT_TOUT1SEL_PULSE |
 			    IMX296_CTRLTOUT_TOUT2SEL_PULSE;
 		pulse1 |= IMX296_PULSE1_EN_NOR;
@@ -787,7 +818,10 @@ static void set_trigger_mode(struct imx296 *sensor, int *err)
 			pulse2 |= IMX296_PULSE2_POL_LOW;
 		}
 	}
+	dev_err(sensor->dev, "IMX296_CTRLTOUT: %d, IMX296_PULSE1: %d, IMX296_PULSE2: %d\n",
+		ctrl_tout, pulse1, pulse2);
 	imx296_write(sensor, IMX296_CTRLTOUT, ctrl_tout, err);
+	#warning check why we need this:
 	imx296_write(sensor, IMX296_CTRLTRIG, 0x21, err);
 	imx296_write(sensor, IMX296_PULSE1, pulse1, err);
 	imx296_write(sensor, IMX296_PULSE2, pulse2, err);
@@ -882,7 +916,9 @@ static int imx296_setup(struct imx296 *sensor, struct v4l2_subdev_state *state)
 	imx296_write(sensor, IMX296_PULSE2_DN,
 		     sensor->custom_ctrls[TRIG_END]->cur.val, &ret);
 
+	dev_err(sensor->dev, "Before Last write: %d\n", ret);
 	imx296_write(sensor, IMX296_BLKLEVEL, 0x03c, &ret);
+	dev_err(sensor->dev, "After Last write: %d\n", ret);
 
 	return ret;
 }
@@ -891,6 +927,7 @@ static int imx296_stream_on(struct imx296 *sensor)
 {
 	int ret = 0;
 
+	dev_err(sensor->dev, "stream on BEGIN");
 	imx296_grab_ctrls(sensor, true);
 	imx296_write(sensor, IMX296_CTRL00, 0, &ret);
 	usleep_range(2000, 5000);
@@ -903,6 +940,7 @@ static int imx296_stream_on(struct imx296 *sensor)
 	 * simple way, everything is configured while the sensor is in standby.
 	 * The controls are grabbed while streaming, or while another control
 	 * is making the driver apply some value. */
+	dev_err(sensor->dev, "stream on END");
 	return ret;
 }
 
@@ -939,6 +977,7 @@ static int imx296_s_stream(struct v4l2_subdev *sd, int enable)
 	if (ret < 0)
 		goto unlock;
 
+	dev_err(sensor->dev, "DEBUG LINE %d Aguardando 200ms\n", __LINE__);
 	msleep(200);
 
 	ret = imx296_setup(sensor, state);
