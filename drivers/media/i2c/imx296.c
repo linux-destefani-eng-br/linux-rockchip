@@ -420,7 +420,7 @@ static void imx296_grab_ctrls(struct imx296 *sensor, bool grabbed)
 
 static void set_shutter_mode(struct imx296 *sensor, u32 vmax)
 {
-	imx296_grab_ctrls(sensor, false);
+	//imx296_grab_ctrls(sensor, false);
 	if (!sensor->custom_ctrls[TRIG_SHUTTER]->val)
 		return;
 	if (sensor->custom_ctrls[TRIG_EXTERNAL]->val) {
@@ -928,7 +928,7 @@ static int imx296_stream_on(struct imx296 *sensor)
 	int ret = 0;
 
 	dev_err(sensor->dev, "stream on BEGIN");
-	imx296_grab_ctrls(sensor, true);
+	//imx296_grab_ctrls(sensor, true);
 	imx296_write(sensor, IMX296_CTRL00, 0, &ret);
 	usleep_range(2000, 5000);
 
@@ -951,7 +951,7 @@ static int imx296_stream_off(struct imx296 *sensor)
 	imx296_write(sensor, IMX296_CTRL0A, IMX296_CTRL0A_XMSTA, &ret);
 	imx296_write(sensor, IMX296_CTRL00, IMX296_CTRL00_STANDBY, &ret);
 
-	imx296_grab_ctrls(sensor, false);
+	//imx296_grab_ctrls(sensor, false);
 
 	return ret;
 }
