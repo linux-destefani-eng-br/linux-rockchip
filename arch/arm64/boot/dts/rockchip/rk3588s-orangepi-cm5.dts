@@ -189,6 +189,12 @@
 		clock-output-names = "ext_cam_imx296_clk";
 		#clock-cells = <0>;
 	};
+
+	cam_dummy_reg: cam_dummy_reg {
+		compatible = "regulator-fixed";
+		regulator-name = "cam-dummy-reg";
+		status = "okay";
+	};
 };
 
 &av1d_mmu {
@@ -583,6 +589,13 @@
 				<0 RK_PC7 RK_FUNC_GPIO &pcfg_pull_none>;
 		};
 	};
+
+	camera1_pwe {
+		camera1_power_enable: camera1-power-enable {
+			rockchip,pins = <1 RK_PD0 RK_FUNC_GPIO &pcfg_pull_none_drv_level_6>;
+		};
+	};
+
 };
 
 &u2phy0 {
