@@ -1581,8 +1581,13 @@ static int imx296_probe(struct i2c_client *client)
 	pm_runtime_get_noresume(sensor->dev);
 	pm_runtime_enable(sensor->dev);
 
+	snprintf(sensor->subdev.name, sizeof(sensor->subdev.name),
+		 "m%02d_%c_%s %s", sensor->module_index,
+		 (strcmp(sensor->module_facing, "back") == 0) ? 'b' : 'f',
+		 IMX296_NAME, dev_name(dev));
+
 	/* Register the V4L2 subdev. */
-	ret = v4l2_async_register_subdev(&sensor->subdev);
+	ret = v4l2_async_register_subdev_sensor(&sensor->subdev);
 	if (ret < 0)
 		goto err_pm;
 
